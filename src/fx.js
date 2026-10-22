@@ -107,7 +107,7 @@ function scheduleChord(ctx, at, pcs, onChord, timers) {
 // onChord(pcs) で、いま鳴っている和音（G=0 とした半音の音名）を知らせる。羽音の基本音 196Hz が G なので。
 // onNote(midi, 時刻, 長さ) で旋律の各音を先回りして知らせる（羽音が旋律を歌うため）。
 // loop=false なら1回だけ流して onEnd を呼ぶ。vinyl=false なら針の音と蓄音機風の立ち上がりを省く。
-export function startRecordMusic(ctx, dest, { onChord, onNote, onEnd, song = SONGS[SONGS.length - 1], loop = true, vinyl = true } = {}) {
+export function startRecordMusic(ctx, dest, { onChord, onNote, onEnd, song = SONGS[SONGS.length - 1], loop = true, vinyl = true, passes = 1 } = {}) {
   const out = ctx.createGain();
   out.gain.value = 0;
   const tone = ctx.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = vinyl ? 350 : 4200; tone.Q.value = 0.5;
@@ -185,7 +185,11 @@ export function startRecordMusic(ctx, dest, { onChord, onNote, onEnd, song = SON
       });
     });
     t0 += loopLen;
-    if (!loop) { // 1回だけ: 曲の終わりに知らせる
+    if (!loop && --passes > 0) { // 繰り返し回数が残っていれば次の周回も予約
+      timers.push(setTimeout(schedule, Math.max(500, (t0 - ctx.currentTime - 2) * 1000)));
+      return;
+    }
+    if (!loop) { // 決めた回数だけ流したら、曲の終わりに知らせる
       if (onEnd) timers.push(setTimeout(() => { alive = false; onEnd(); }, (t0 - ctx.currentTime + 1.0) * 1000));
       return;
     }

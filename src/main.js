@@ -2,10 +2,10 @@ import { createSwarm } from './swarm.js';
 import { createWingSound } from './wingsound.js';
 import { makeDeskChunk, makeItem, drawItem, bite, ITEM_LABELS } from './pixelart.js';
 import {
-  startRadio, startRecordMusic, startFarewell,
-  playMusicBox, startClock, startWindchime, startScoreFlute,
+  startRecordMusic, startFarewell, startClock, startWindchime,
 } from './fx.js';
 import { SONGS } from './songs.js';
+import { ITEM_SONGS } from './item-songs.js';
 
 // 低解像度の内部キャンバスに描いて拡大表示する（ファミコン風の粗さを保つ）
 const W = 256, H = 144;             // 画面（ビュー）の大きさ。世界は同じ大きさの区画が上下左右に無限に続く
@@ -63,8 +63,8 @@ const START_FLIES = 60;
 const TARGET_FLIES = 40000;  // 終幕の匹数: 群れが画面いっぱいに広がる数（動きの計算は5,000匹、残りは分身として描く）
 const BITE_PROB = 0.06;      // 1匹が1フレームにアイテム上でかじる確率
 // 食べ切ったときの増え方は掛け算（いまの匹数の何倍になるか）。数が多いほど食べるのも速く、後半は雪だるま式に増える
-const GROWTH = { small: 2.5, mid: 3.5, large: 5 };  // 増える分（倍率−1）を以前の5倍に
-const BREED = 0.006;         // 何もしなくても1秒に0.6%ずつ自然に増える（約2分で2倍）
+const GROWTH = { small: 1.5, mid: 1.83, large: 2.33 };  // 食べ切ると何倍になるか（速すぎたので、増える分を3分の1に調整）
+const BREED = 0.002;         // 何もしなくても1秒に0.2%ずつ自然に増える（約6分で2倍）
 
 // アイテムの大きさの区分（増加量）と、出やすさ。レコードは曲ごとに楽しめるよう3倍出やすい
 const ITEM_DEF = {
@@ -241,10 +241,10 @@ function drawLight(cx, cy, dt) {
   }
 }
 
-// ---- 食べ始めたときのアクション ----
+// ---- 食べ始めたときのアクション（音楽版: どんなモノを食べても、そのモノの曲が流れる） ----
 const eaten = []; // 食べた順（終幕後の一覧用）
-const heard = []; // 流れたレコードの曲名
-const SOUND_ACTIONS = new Set(['sugar', 'chili', 'radio', 'record', 'sheetmusic', 'musicbox', 'clock', 'windchime']);
+const heard = []; // 流れた曲名
+const SOUND_ACTIONS = { has: () => true }; // 音楽版ではすべてのモノが曲を鳴らすので、音が始まるまで発動を待つ
 function fireAction(o) {
   switch (o.name) {
     // 見た目
@@ -257,28 +257,37 @@ function fireAction(o) {
     case 'umeboshi': swarm.setSpread(0.6); break;                                 // 群れがきゅっと縮まる
     case 'candle': darkTarget = 1; warmTarget = 0; break;                         // 部屋が暗くなり、ろうそくの光
     case 'lightbulb': darkTarget = 0; warmTarget = 1; break;                      // 明るく暖かくなる
-    // 音
-    case 'sugar': if (!music) wings.setPitchShift(2); break;                      // 羽音が少し高く
-    case 'chili': if (!music) wings.setPitchShift(-3); break;                     // 羽音が低く太く
-    case 'radio': if (!radio && !music) radio = startRadio(actx, master); break; // ノイズ混じりの音声
+    // 曲の後ろで小さく鳴り続ける音
     case 'clock': if (!ambient.clock) ambient.clock = startClock(actx, master); break;
     case 'windchime': if (!ambient.chime) ambient.chime = startWindchime(actx, master); break;
-    case 'musicbox': playMusicBox(actx, master); break;                           // 毎回一度だけ鳴る
-    case 'sheetmusic': if (!ambient.flute) ambient.flute = startScoreFlute(actx, master, () => chord); break; // 笛が加わる
-    // 音楽: レコードごとに違う曲。羽音がその和音へ溶けていく
-    case 'record':
-      if (music && musicSong === o.variant) break;
-      if (music) { music.stop(2.0); wings.melodyOff(); }
-      if (radio) { radio.stop(1.5); radio = null; }                               // 音楽の出どころは1つにする
-      wings.setPitchShift(0);
-      music = startRecordMusic(actx, master, { song: SONGS[o.variant], onChord: harmonize(2.0), onNote: wings.playNote });
-      musicSong = o.variant;
-      singing = -1; updateSinging(swarm.count);
-      heard.push(SONGS[o.variant].title);
-      showCaption('♪ ' + SONGS[o.variant].title);
-      break;
-    default: break; // banana・apple: 基準 / bread・onigiri・watermelon・manga・cards は食べている間の粒子で表現
+    default: break;
   }
+  // 曲: レコードはラベルの色ごとの曲をループ（針の音つき）、それ以外はモノごとの曲を1回（短い曲は約16秒になるまで繰り返す）
+  if (o.name === 'record') {
+    if (music && musicSong === 'record' + o.variant) return;
+    playSong(SONGS[o.variant], 'record' + o.variant, { loop: true, vinyl: true });
+  } else {
+    const song = ITEM_SONGS[o.name];
+    if (song) playSong(song, o.name, { loop: false, vinyl: false });
+  }
+}
+function songLength(song) {
+  return song.chords.trim().split(/\s+/).length * song.meter * song.beat;
+}
+function playSong(song, key, { loop, vinyl }) {
+  if (music) { music.stop(loop ? 2.0 : 1.0); wings.melodyOff(); }
+  const passes = loop ? 1 : Math.max(1, Math.round(16 / songLength(song)));
+  const h = startRecordMusic(actx, master, {
+    song, loop, vinyl, passes,
+    onChord: harmonize(2.0),
+    onNote: wings.playNote,
+    onEnd: () => { if (music === h) { music = null; musicSong = -1; wings.setHarmony(null); } }, // 曲が終わったら羽音は自然なざわめきへ戻る
+  });
+  music = h;
+  musicSong = key;
+  singing = -1; updateSinging(swarm.count);
+  heard.push(song.title);
+  showCaption('♪ ' + song.title);
 }
 const firedLate = []; // 音が未開始のときに発動を待つ「音」のアクション
 
@@ -425,7 +434,7 @@ function showList() {
     return li;
   }));
   const m = Math.floor(playSec / 60), s = Math.floor(playSec % 60);
-  ui.list.querySelector('p').textContent = `ハエ ${swarm.count}匹 ・ ${m}分${s}秒 ・ 聴いたレコード ${new Set(heard).size}枚`;
+  ui.list.querySelector('p').textContent = `ハエ ${swarm.count}匹 ・ ${m}分${s}秒 ・ 聴いた曲 ${new Set(heard).size}曲`;
   ui.list.style.opacity = 1;
 }
 
